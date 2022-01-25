@@ -4,10 +4,10 @@
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
-    <ProjectGuid>{8F208DB9-7555-46D5-A5FE-2D7E85E05CAA}</ProjectGuid>
+    <ProjectGuid>{8B723CB2-017A-4CB6-B3E6-C26E9F1F8B3C}</ProjectGuid>
     <OutputType>Exe</OutputType>
-    <RootNamespace>SwitchPriv</RootNamespace>
-    <AssemblyName>SwitchPriv</AssemblyName>
+    <RootNamespace>TrustExec</RootNamespace>
+    <AssemblyName>TrustExec</AssemblyName>
     <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>
@@ -52,7 +52,7 @@
     <Compile Include="Library\Helpers.cs" />
     <Compile Include="Library\Modules.cs" />
     <Compile Include="Library\Utilities.cs" />
-    <Compile Include="SwitchPriv.cs" />
+    <Compile Include="TrustExec.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>

