@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Security.Principal;
 using TrustExec.Interop;
 
@@ -7,62 +6,172 @@ namespace TrustExec.Library
 {
     class Modules
     {
-        public static bool AddVirtualAccount(string domain, string username, int groupId)
+        public static bool AddVirtualAccount(
+            string domain,
+            string username,
+            int domainRid)
         {
+            if (string.IsNullOrEmpty(domain))
+            {
+                Console.WriteLine("[!] Domain name is not specified.\n");
+
+                return false;
+            }
+
+            Console.WriteLine();
+            Console.WriteLine("[>] Trying to get SYSTEM.");
+
             IntPtr hCurrentToken = WindowsIdentity.GetCurrent().Token;
-            var privilegeNames = new List<string> {
+            var privs = new string[] {
                 Win32Const.SE_DEBUG_NAME,
                 Win32Const.SE_IMPERSONATE_NAME
             };
 
-            Console.WriteLine();
-
-            var results = Utilities.EnableMultiplePrivileges(
-                hCurrentToken,
-                privilegeNames);
-
-            foreach (var result in results)
-            {
-                if (!result.Value)
-                {
-                    Console.WriteLine("\n[-] {0} is not available.\n", result.Key);
-                    return false;
-                }
-            }
-
-            if (!Utilities.ImpersonateAsSmss())
+            if (!Utilities.EnableMultiplePrivileges(hCurrentToken, privs))
                 return false;
 
-            bool status = Utilities.AddVirtualAccount(domain, username, groupId);
+            privs = new string[] {
+                Win32Const.SE_ASSIGNPRIMARYTOKEN_NAME,
+                Win32Const.SE_INCREASE_QUOTA_NAME
+            };
 
+            if (!Utilities.ImpersonateAsSmss(privs))
+                return false;
+
+            bool status = Utilities.AddVirtualAccount(domain, username, domainRid);
             Win32Api.RevertToSelf();
 
             return status;
         }
 
 
-        public static bool RunTrustedInstallerProcess(
+        public static bool LookupSid(
             string domain,
             string username,
-            int groupId,
-            string command,
-            bool fullPrivilege)
+            string sid)
         {
-            string execute;
+            string result;
+            string accountName;
+
+            if ((!string.IsNullOrEmpty(domain) || !string.IsNullOrEmpty(username)) &&
+                !string.IsNullOrEmpty(sid))
+            {
+                Console.WriteLine("\n[!] Username or domain name should not be specified with SID at a time.\n");
+
+                return false;
+            }
+            else if (!string.IsNullOrEmpty(domain) || !string.IsNullOrEmpty(username))
+            {
+                if (!string.IsNullOrEmpty(domain) && domain.Trim() == ".")
+                    domain = Environment.MachineName;
+
+                if (!string.IsNullOrEmpty(domain) && !string.IsNullOrEmpty(username))
+                    accountName = string.Format("{0}\\{1}", domain, username);
+                else if (!string.IsNullOrEmpty(domain))
+                    accountName = domain;
+                else if (!string.IsNullOrEmpty(username))
+                    accountName = username;
+                else
+                    return false;
+
+                result = Helpers.ConvertAccountNameToSidString(
+                    ref accountName,
+                    out Win32Const.SID_NAME_USE peUse);
+
+                if (!string.IsNullOrEmpty(result))
+                {
+                    Console.WriteLine();
+                    Console.WriteLine("[*] Result:");
+                    Console.WriteLine("    |-> Account Name : {0}", accountName);
+                    Console.WriteLine("    |-> SID          : {0}", result);
+                    Console.WriteLine("    |-> Account Type : {0}", peUse.ToString());
+                    Console.WriteLine();
+
+                    return true;
+                }
+                else
+                {
+                    Console.WriteLine("\n[*] No result.\n");
+
+                    return false;
+                }
+            }
+            else if (!string.IsNullOrEmpty(sid))
+            {
+                sid = sid.ToUpper();
+                result = Helpers.ConvertSidStringToAccountName(
+                    ref sid,
+                    out Win32Const.SID_NAME_USE peUse);
+
+                if (!string.IsNullOrEmpty(result))
+                {
+                    Console.WriteLine();
+                    Console.WriteLine("[*] Result:");
+                    Console.WriteLine("    |-> Account Name : {0}", result);
+                    Console.WriteLine("    |-> SID          : {0}", sid);
+                    Console.WriteLine("    |-> Account Type : {0}", peUse.ToString());
+                    Console.WriteLine();
+
+                    return true;
+                }
+                else
+                {
+                    Console.WriteLine("\n[*] No result.\n");
+
+                    return false;
+                }
+            }
+            else
+            {
+                Console.WriteLine("\n[!] SID, domain name or username to lookup is required.\n");
+
+                return false;
+            }
+        }
+
+
+        public static bool RemoveVirtualAccount(string domain, string username)
+        {
+            if (string.IsNullOrEmpty(domain))
+            {
+                Console.WriteLine("[!] Domain name is not specified.\n");
+
+                return false;
+            }
 
             Console.WriteLine();
+            Console.WriteLine("[>] Trying to get SYSTEM.");
 
-            if (domain == string.Empty || domain == null)
-            {
-                Console.WriteLine("[!] Domain is not specified.\n");
-            }
+            IntPtr hCurrentToken = WindowsIdentity.GetCurrent().Token;
+            var privs = new string[] {
+                Win32Const.SE_DEBUG_NAME,
+                Win32Const.SE_IMPERSONATE_NAME
+            };
 
-            if (username == string.Empty || username == null)
-            {
-                Console.WriteLine("[!] Username is not specified.\n");
-            }
+            if (!Utilities.EnableMultiplePrivileges(hCurrentToken, privs))
+                return false;
 
-            if (command == string.Empty || command == null)
+            privs = new string[] {
+                Win32Const.SE_ASSIGNPRIMARYTOKEN_NAME,
+                Win32Const.SE_INCREASE_QUOTA_NAME
+            };
+
+            if (!Utilities.ImpersonateAsSmss(privs))
+                return false;
+
+            bool status = Utilities.RemoveVirtualAccount(domain, username);
+            Win32Api.RevertToSelf();
+
+            return status;
+        }
+
+
+        public static bool RunTrustedInstallerProcess(string command, string extraSidsString, bool full)
+        {
+            string execute;
+            string[] extraSidsArray;
+
+            if (string.IsNullOrEmpty(command))
             {
                 execute = "C:\\Windows\\System32\\cmd.exe";
             }
@@ -73,32 +182,124 @@ namespace TrustExec.Library
                     command);
             }
 
+            Console.WriteLine();
+
+            if (string.IsNullOrEmpty(extraSidsString))
+            {
+                extraSidsArray = new string[] { };
+            }
+            else
+            {
+                extraSidsArray = Helpers.ParseGroupSids(extraSidsString);
+            }
+
+            Console.WriteLine("[>] Trying to get SYSTEM.");
+
             IntPtr hCurrentToken = WindowsIdentity.GetCurrent().Token;
-            var privilegeNames = new List<string> {
+            var privs = new string[] {
                 Win32Const.SE_DEBUG_NAME,
                 Win32Const.SE_IMPERSONATE_NAME
             };
 
-            var results = Utilities.EnableMultiplePrivileges(
-                hCurrentToken,
-                privilegeNames);
+            if (!Utilities.EnableMultiplePrivileges(hCurrentToken, privs))
+                return false;
 
-            foreach (var result in results)
+            privs = new string[] {
+                Win32Const.SE_CREATE_TOKEN_NAME,
+                Win32Const.SE_ASSIGNPRIMARYTOKEN_NAME
+            };
+
+            if (!Utilities.ImpersonateAsSmss(privs))
+                return false;
+
+            IntPtr hToken = Utilities.CreateTrustedInstallerToken(
+                Win32Const.TOKEN_TYPE.TokenPrimary,
+                Win32Const.SECURITY_IMPERSONATION_LEVEL.SecurityAnonymous,
+                extraSidsArray,
+                full);
+
+            if (hToken == IntPtr.Zero)
+                return false;
+
+            bool status = Utilities.CreateTokenAssignedProcess(hToken, execute);
+            Win32Api.CloseHandle(hToken);
+            Win32Api.RevertToSelf();
+
+            return status;
+        }
+
+
+        public static bool RunTrustedInstallerProcessWithVirtualLogon(
+            string domain,
+            string username,
+            int domainRid,
+            string command,
+            string extraSidsString,
+            bool fullPrivilege)
+        {
+            string execute;
+            string[] extraSidsArray;
+
+            if (string.IsNullOrEmpty(domain))
             {
-                if (!result.Value)
-                {
-                    Console.WriteLine("\n[-] {0} is not available.\n", result.Key);
-                    return false;
-                }
+                Console.WriteLine("[!] Domain name is not specified.\n");
+
+                return false;
             }
 
-            if (!Utilities.ImpersonateAsSmss())
+            if (string.IsNullOrEmpty(username))
+            {
+                Console.WriteLine("[!] Username is not specified.\n");
+
+                return false;
+            }
+
+            if (string.IsNullOrEmpty(command))
+            {
+                execute = "C:\\Windows\\System32\\cmd.exe";
+            }
+            else
+            {
+                execute = string.Format(
+                    "C:\\Windows\\System32\\cmd.exe /c \"{0}\"",
+                    command);
+            }
+
+            Console.WriteLine();
+
+            if (string.IsNullOrEmpty(extraSidsString))
+            {
+                extraSidsArray = new string[] { };
+            }
+            else
+            {
+                extraSidsArray = Helpers.ParseGroupSids(extraSidsString);
+            }
+
+            Console.WriteLine("[>] Trying to get SYSTEM.");
+
+            IntPtr hCurrentToken = WindowsIdentity.GetCurrent().Token;
+            var privs = new string[] {
+                Win32Const.SE_DEBUG_NAME,
+                Win32Const.SE_IMPERSONATE_NAME
+            };
+
+            if (!Utilities.EnableMultiplePrivileges(hCurrentToken, privs))
+                return false;
+
+            privs = new string[] {
+                Win32Const.SE_ASSIGNPRIMARYTOKEN_NAME,
+                Win32Const.SE_INCREASE_QUOTA_NAME
+            };
+
+            if (!Utilities.ImpersonateAsSmss(privs))
                 return false;
 
             IntPtr hToken = Utilities.CreateTrustedInstallerTokenWithVirtualLogon(
                 domain,
                 username,
-                groupId);
+                domainRid,
+                extraSidsArray);
 
             if (hToken == IntPtr.Zero)
                 return false;
@@ -111,93 +312,6 @@ namespace TrustExec.Library
             Win32Api.RevertToSelf();
 
             return status;
-        }
-
-
-        public static bool RemoveVirtualAccount(string domain, string username)
-        {
-            IntPtr hCurrentToken = WindowsIdentity.GetCurrent().Token;
-            var privilegeNames = new List<string> {
-                Win32Const.SE_DEBUG_NAME,
-                Win32Const.SE_IMPERSONATE_NAME
-            };
-
-            Console.WriteLine();
-
-            var results = Utilities.EnableMultiplePrivileges(
-                hCurrentToken,
-                privilegeNames);
-
-            foreach (var result in results)
-            {
-                if (!result.Value)
-                {
-                    Console.WriteLine("\n[-] {0} is not available.\n", result.Key);
-                    return false;
-                }
-            }
-
-            if (!Utilities.ImpersonateAsSmss())
-                return false;
-
-            bool status = Utilities.RemoveVirtualAccount(domain, username);
-
-            Win32Api.RevertToSelf();
-
-            return status;
-        }
-
-
-        public static bool SidLookup(string domain, string username, string sid)
-        {
-            string result;
-            string accountName;
-
-            if (sid != null)
-            {
-                result = Helpers.ConvertSidStringToAccountName(sid);
-                
-                if (result != null)
-                {
-                    Console.WriteLine("\n[*] Result : {0} (SID : {1})\n", result, sid.ToUpper());
-                    
-                    return true;
-                }
-                else
-                {
-                    Console.WriteLine("\n[*] No result.\n");
-
-                    return false;
-                }
-            }
-            else if (domain != null)
-            {
-                if (username != null)
-                    accountName = string.Format("{0}\\{1}", domain, username);
-                else
-                    accountName = domain;
-
-                result = Helpers.ConvertAccountNameToSidString(ref accountName);
-
-                if (result != null)
-                {
-                    Console.WriteLine("\n[*] Result : {0} (SID : {1})\n", accountName.ToLower(), result);
-
-                    return true;
-                }
-                else
-                {
-                    Console.WriteLine("\n[*] No result.\n");
-
-                    return false;
-                }
-            }
-            else
-            {
-                Console.WriteLine("\n[!] SID or domain name to lookup is required.\n");
-
-                return false;
-            }
         }
     }
 }
